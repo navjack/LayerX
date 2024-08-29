@@ -7,12 +7,16 @@
 //
 
 import Cocoa
+import UniformTypeIdentifiers
+
+private let tabTagBase = 500
 
 @NSApplicationMain
 class AppDelegate: NSObject, NSApplicationDelegate {
 
 	private let defaultSize = NSMakeSize(480, 320)
 	private let resizeStep: CGFloat = 0.1
+    private let dockMenu = createDockMenu()
 
 	var allSpaces = false
 	var locked = false
@@ -22,9 +26,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 	weak var viewController: ViewController!
 	var isLockIconHiddenWhileLocked = false {
 		didSet { viewController.lockIconImageView.isHidden = window.isMovable || isLockIconHiddenWhileLocked }
-	}
-	var isSizeHidden = false {
-		didSet { viewController.sizeTextField.isHidden = isSizeHidden }
 	}
 
 	func applicationDidFinishLaunching(_ aNotification: Notification) {
@@ -48,10 +49,10 @@ fileprivate enum ArrowTag: Int {
 extension AppDelegate {
 
 	private var originalSize: NSSize {
-		viewController.imageView.image?.size ?? defaultSize
+		viewController.imageSize ?? defaultSize
 	}
 
-	private func resizeAspectFit(calculator: (_ original: CGFloat, _ current: CGFloat) -> CGFloat) {
+	func resizeAspectFit(calculator: (_ original: CGFloat, _ current: CGFloat) -> CGFloat) {
 		let originalSize = self.originalSize
 		let width = calculator(originalSize.width, window.frame.size.width)
 		let height = width / originalSize.width * originalSize.height
@@ -60,6 +61,94 @@ extension AppDelegate {
 			window.resizeTo(NSSize(width: width, height: height), animated: true)
 		}
 	}
+
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        return dockMenu
+    }
+
+    fileprivate class func createDockMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.addItem(withTitle: "Switch to Image 1", action: #selector(showTab(_:)), keyEquivalent: "1").tag = tabTagBase + 1
+        return menu
+    }
+
+    func updateMenusForTab(_ tab: Int, exists: Bool) {
+        if let windowMenu = getWindowMenu() {
+            updateMenu(windowMenu, tab: tab, exists: exists)
+        }
+        updateMenu(dockMenu, tab: tab, exists: exists)
+    }
+
+    fileprivate func getWindowMenu() -> NSMenu? {
+        return NSApp.mainMenu?.item(withTag: 5)?.submenu
+    }
+
+    fileprivate func updateMenu(_ menu: NSMenu, tab: Int, exists: Bool) {
+        let tag = tabTagBase + tab
+        if !exists, let item = menu.item(withTag: tag) {
+            if tab > 1 {
+                menu.removeItem(item)
+            }
+        } else if exists, menu.item(withTag: tag) == nil {
+            let prevIndex = menu.items.lastIndex { item in
+                item.tag >= tabTagBase && item.tag < tag
+            }!
+            let item = menu.insertItem(withTitle: "Switch to Image \(tab)", action: #selector(self.showTab(_:)), keyEquivalent: String(tab), at: prevIndex + 1)
+            item.tag = tag
+            item.isEnabled = true
+        }
+    }
+
+    @IBAction func newDocument(_ sender: AnyObject?) {
+        if let tab = findNextUnusedTab() {
+            viewController.selectTab(tab)
+        }
+    }
+
+    fileprivate func findNextUnusedTab() -> Int? {
+        for tab in 1...9 {
+            if !viewController.tabHasImage(tab) {
+                return tab
+            }
+        }
+        return nil
+    }
+
+    @IBAction func openDocument(_ sender: AnyObject?) {
+        let openPanel = NSOpenPanel()
+        openPanel.title = "Choose an image"
+        openPanel.showsResizeIndicator = true
+        openPanel.showsHiddenFiles = false
+        openPanel.canChooseDirectories = false
+        openPanel.canCreateDirectories = false
+        openPanel.allowsMultipleSelection = true
+        if #available(macOS 11.0, *) {
+            openPanel.allowedContentTypes = [UTType.image]
+        } else {
+            openPanel.allowedFileTypes = NSImage.imageTypes
+        }
+        openPanel.begin(completionHandler: { result in
+            if result != .OK {
+                return
+            }
+            for (index, url) in openPanel.urls.enumerated() {
+                if let tab = index == 0 ? self.viewController.currentTab : self.findNextUnusedTab() {
+                    if let image = NSImage(contentsOf: url) {
+                        self.viewController.selectTab(tab)
+                        self.viewController.updateCurrentImage(image)
+                        self.updateMenusForTab(tab, exists: true)
+                    }
+                } else {
+                    break
+                }
+            }
+        })
+    }
+
+    @IBAction func performClose(_ sender: AnyObject?) {
+        viewController.updateCurrentImage(nil)
+        updateMenusForTab(viewController.currentTab, exists: false)
+    }
 
 	@IBAction func actualSize(_ sender: AnyObject?) {
 		window.resizeTo(originalSize, animated: true)
@@ -82,17 +171,19 @@ extension AppDelegate {
 	}
 
 	@IBAction func increaseTransparency(_ sender: AnyObject) {
-		var alpha = viewController.imageView.alphaValue
-		alpha -= 0.1
-		viewController.imageView.alphaValue = max(alpha, 0.05)
+		viewController.changeTransparency(by: -0.1)
 	}
 
 	@IBAction func reduceTransparency(_ sender: AnyObject) {
-		var alpha = viewController.imageView.alphaValue
-		alpha += 0.1
-		viewController.imageView.alphaValue = min(alpha, 1.0)
+		viewController.changeTransparency(by: 0.1)
 	}
 	
+    @IBAction func showTab(_ sender: AnyObject) {
+        let menuItem = sender as! NSMenuItem
+        let tab = menuItem.tag - tabTagBase
+        viewController.selectTab(tab)
+    }
+
 	func getPasteboardImage() -> NSImage? {
 		let pasteboard = NSPasteboard.general;
 		if let file = pasteboard.data(forType: NSPasteboard.PasteboardType.fileURL),
@@ -112,16 +203,11 @@ extension AppDelegate {
 
 		return nil
 	}
-	
+
 	@IBAction func paste(_ sender: AnyObject) {
 		guard let image = getPasteboardImage() else { return }
-		let rep = image.representations[0]
-		viewController.imageView.image = image
-		let size = NSMakeSize(CGFloat(rep.pixelsWide), CGFloat(rep.pixelsHigh))
-		window.resizeTo(size, animated: true)
-		viewController.sizeTextField.isHidden = false
-		viewController.placeholderTextField.isHidden = true
-
+		viewController.updateCurrentImage(image)
+        updateMenusForTab(viewController.currentTab, exists: true)
 	}
 	
 	@IBAction func toggleLockWindow(_ sender: AnyObject) {
@@ -164,7 +250,7 @@ extension AppDelegate {
 	@IBAction func toggleSizeVisibility(_ sender: AnyObject) {
 		let menuItem = sender as! NSMenuItem
 		menuItem.state = menuItem.state == .on ? .off : .on
-		isSizeHidden = menuItem.state == .on
+		viewController.isSizeHidden = menuItem.state == .on
 	}
 
 	@IBAction func moveAround(_ sender: AnyObject) {
@@ -196,10 +282,6 @@ extension AppDelegate {
 			menuItem.title = "Keep on all spaces"
 			window.collectionBehavior = [.managed, .moveToActiveSpace]
 		}
-	}
-
-	func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-		return viewController.imageView.image != nil
 	}
 }
 
