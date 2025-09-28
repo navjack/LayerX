@@ -34,8 +34,7 @@ class MCWIndow: NSWindow {
 	}
 
 	func resizeTo(_ size: NSSize, animated: Bool) {
-		var frame = self.frame
-		frame.size = size
+		let frame = self.resizeFrameTo(size)
 
 		if !animated {
 			setFrame(frame, display: true)
@@ -49,6 +48,32 @@ class MCWIndow: NSWindow {
 		animations.duration = 0.15
 		animations.start()
 	}
+
+    func resizeFrameTo(_ size: NSSize) -> NSRect {
+        var frame = self.frame
+
+        if let screen = NSScreen.main {
+            // Resize from the top, left, bottom or right depending on how close to each edge the window is
+            let fromLeft = (frame.origin.x + (frame.size.width / 2)) < (screen.frame.size.width / 2)
+            let fromBottom = (frame.origin.y + (frame.size.height / 2)) < (screen.frame.size.height / 2)
+            frame = frame.offsetBy(
+                dx: fromLeft ? 0 : frame.size.width - size.width,
+                dy: fromBottom ? 0 : frame.size.height - size.height)
+
+            // Keep on screen
+            if frame.origin.x + size.width > screen.frame.size.width {
+                frame.origin.x = screen.frame.size.width - size.width
+            }
+            if frame.origin.y + size.height > screen.frame.size.height {
+                frame.origin.y = screen.frame.size.height - size.height
+            }
+            frame = frame.offsetBy(dx: max(0, -frame.origin.x), dy: max(0, -frame.origin.y))
+        }
+
+        frame.size = size
+
+        return frame
+    }
 
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
         return frameRect
